@@ -379,7 +379,9 @@ function searchReplaceEdits(lines: string[], strict: boolean): Edit[] {
       i += 1;
       continue;
     }
-    const sep = lines.findIndex((l, k) => k > i && l.trimEnd() === '=======');
+    // the first marker after the SEARCH line must be the separator; a REPLACE line before any separator is a parse error
+    const marker = lines.findIndex((l, k) => k > i && (l.trimEnd() === '=======' || l.trimEnd() === '>>>>>>> REPLACE'));
+    const sep = marker >= 0 && lines[marker]!.trimEnd() === '=======' ? marker : -1;
     const end = sep < 0 ? -1 : lines.findIndex((l, k) => k > sep && l.trimEnd() === '>>>>>>> REPLACE');
     if (end < 0) throw new Exit2(`error: parse ${i + 1}`);
     let path: string | null = null;
