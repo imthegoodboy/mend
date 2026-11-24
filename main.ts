@@ -7,7 +7,7 @@
 // In a trial the grader runs `node /bot/main.ts` with MAKEFUN_ENV_URL set, and then this file hands over to runner.ts
 // (the last lines below): keep that hand-over and runner.ts as they are, and write the CLI.
 
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { mkdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const FORMATS = ['auto', 'unified', 'search-replace', 'v4a', 'json'];
@@ -646,6 +646,49 @@ function jsonEdits(text: string, lines: string[]): Edit[] {
   return edits;
 }
 
+/** All of standard input as text; a closed or absent stdin reads as empty, and a pipe that is not ready yet is waited for. */
+function readStdin(): string {
+  const chunks: Buffer[] = [];
+  const buf = Buffer.alloc(65536);
+  let spins = 0;
+  for (;;) {
+    let n = 0;
+    try {
+      n = readSync(0, buf, 0, buf.length, null);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'EAGAIN' && spins < 200000) {
+        spins += 1;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        continue;
+      }
+      break; // EOF on some platforms, a closed descriptor, or a terminal with nothing to read
+    }
+    if (n === 0) break;
+    chunks.push(Buffer.from(buf.subarray(0, n)));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/** Writes all of `text` to standard output, even when the pipe takes it in parts. */
+function writeOut(text: string): void {
+  const data = Buffer.from(text);
+  let done = 0;
+  let spins = 0;
+  while (done < data.length) {
+    try {
+      done += writeSync(1, data, done, data.length - done);
+    } catch (e) {
+      if ((e as { code?: string }).code === 'EAGAIN' && spins < 200000) {
+        spins += 1;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 function run(args: string[]): { code: number; out: string[] } {
   let format: string | null = null;
   let check = false;
@@ -664,10 +707,13 @@ function run(args: string[]): { code: number; out: string[] } {
   if (pos.length > 1) return { code: 2, out: ['error: usage'] };
   const file = pos.length === 0 || pos[0] === '-' ? null : pos[0]!;
   let text = '';
-  try {
-    text = readFileSync(file ?? 0, 'utf8');
-  } catch {
-    if (file !== null) return { code: 2, out: ['error: no-patch'] };
+  if (file === null) text = readStdin();
+  else {
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      return { code: 2, out: ['error: no-patch'] };
+    }
   }
   const lines = patchLines(text);
   const kind = format === null || format === 'auto' ? detect(lines) : format;
@@ -737,6 +783,6 @@ if (trialEnv !== undefined && trialEnv !== '') {
   await runTrial(trialEnv);
 } else {
   const r = run(process.argv.slice(2));
-  writeSync(1, r.out.map((l) => `${l}\n`).join(''));
+  writeOut(r.out.map((l) => `${l}\n`).join(''));
   process.exitCode = r.code;
 }
